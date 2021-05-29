@@ -28,6 +28,15 @@ struct WireLocationAPI
     virtual ArcBounds wire_bounds(WireId wire) const = 0;
 };
 
+struct DefaultWireLocation : WireLocationAPI
+{
+    Context *ctx;
+
+    DefaultWireLocation(Context *ctx) : ctx(ctx){};
+    virtual Loc approx_wire_loc(WireId wire) const override;
+    virtual ArcBounds wire_bounds(WireId wire) const override;
+};
+
 // This should convert `WireId`s to/from a flat index (only going to a flat index needs to be fast). The index does not
 // need to be strictly contiguous but should not have excessive gaps for memory efficiency
 struct FlatWireIndexerAPI
@@ -37,19 +46,41 @@ struct FlatWireIndexerAPI
     virtual WireId get_wire(uint32_t index) const = 0;
 };
 
+struct DefaultFlatWireIndexer : FlatWireIndexerAPI
+{
+    DefaultFlatWireIndexer(Context *ctx);
+    uint32_t size() const override;
+    uint32_t get_index(WireId wire) const override;
+    WireId get_wire(uint32_t index) const override;
+
+    std::vector<WireId> wire_by_index;
+    std::unordered_map<WireId, uint32_t> wire_to_index;
+};
+
 // This allows architectures to split the routing problem of a wire into sections; for example to force the use of
 // global resources for some sinks
 struct WireSegment
 {
+    WireSegment(WireId src, WireId dst) : src(src), dst(dst){};
+    WireSegment(WireId src, WireId dst, size_t sink_idx) : src(src), dst(dst), logical_sink(sink_idx){};
+
     WireId src;
     WireId dst;
     // The logical sink reached by this segment, if applicable
-    size_t logical_sink = std::numeric_limits<size_t>::npos();
+    size_t logical_sink = std::numeric_limits<size_t>::max();
 };
 
 struct WireSegmenterAPI
 {
     virtual std::vector<WireSegment> segment_net(const NetInfo *net) = 0;
+};
+
+struct DefaultWireSegmenter : WireSegmenterAPI
+{
+    Context *ctx;
+
+    DefaultWireSegmenter(Context *ctx) : ctx(ctx){};
+    virtual std::vector<WireSegment> segment_net(const NetInfo *net) override;
 };
 
 NEXTPNR_NAMESPACE_END

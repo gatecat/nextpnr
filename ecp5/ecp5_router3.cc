@@ -18,7 +18,7 @@
  */
 
 #include "nextpnr.h"
-#include "router3.h"
+#include "router3_api.h"
 
 NEXTPNR_NAMESPACE_BEGIN
 
