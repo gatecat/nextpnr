@@ -18,9 +18,31 @@
  */
 
 #include "nextpnr.h"
-#include "router3_api.h"
-#include "router3_impl.h"
 
 NEXTPNR_NAMESPACE_BEGIN
+
+template <uint8_t bits> struct PackedArray {
+	using Tchunk = uint64_t;
+	using Tvalue = uint8_t;
+	static constexpr Tchunk vals_per_chunk = (64 / bits);
+	static constexpr Tchunk mask = ((1 << bits) - 1);
+
+	PackedArray() = default;
+	PackedArray(size_t size) { resize(size); };
+	Tvalue get(size_t index) const {
+		Tchunk ch = chunks.at(index / vals_per_chunk);
+		return (ch >> ((index % vals_per_chunk) * bits)) & mask;
+	}
+	void set(size_t index, Tvalue value) {
+		Tchunk &ch = chunks.at(index / vals_per_chunk);
+		size_t bit_offset = (index % vals_per_chunk) * bits;
+		ch &= ~(mask << (bit_offset));
+		ch |= ((value & mask) << bit_offset);
+	}
+	void resize(size_t new_size) {
+		chunks.resize((new_size + vals_per_chunk - 1) / vals_per_chunk);
+	}
+	std::vector<Tchunk> chunks;
+};
 
 NEXTPNR_NAMESPACE_END
