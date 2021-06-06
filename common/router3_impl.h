@@ -60,7 +60,7 @@ struct WireStatusStore
 {
     PackedArray<3> flat_data;
     // TODO: faster hash maps?
-    std::unordered_map<uint32_t, WireStatus> ext_data;
+    dict<uint32_t, WireStatus> ext_data;
     WireStatus get(uint32_t wire_idx) const
     {
         uint8_t f = flat_data.get(wire_idx);

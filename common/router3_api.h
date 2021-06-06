@@ -54,7 +54,7 @@ struct DefaultFlatWireIndexer : FlatWireIndexerAPI
     WireId get_wire(uint32_t index) const override;
 
     std::vector<WireId> wire_by_index;
-    std::unordered_map<WireId, uint32_t> wire_to_index;
+    dict<WireId, uint32_t> wire_to_index;
 };
 
 // This allows architectures to split the routing problem of a wire into sections; for example to force the use of
