@@ -81,4 +81,64 @@ struct WireStatusStore
     }
 };
 
+struct NetData
+{
+    // Wire -> (uphill pip, bound arc count)
+    dict<uint32_t, std::pair<PipId, int>> wires;
+    // ....
+};
+
+struct Router3Types
+{
+    using WireLocT = DefaultWireLocation;
+    using FlatWireT = DefaultFlatWireIndexer;
+    using WireSegT = DefaultWireSegmenter;
+};
+
+template <typename Types> struct Router3
+{
+
+    Router3(Context *ctx) : ctx(ctx), wire_loc(ctx), flat_wires(ctx), wire_seg(ctx){};
+
+    dict<IdString, NetData> nets;
+    WireStatusStore wires;
+
+    void bind_wire(NetData &net, uint32_t wire, PipId uphill)
+    {
+        auto found = net.wires.find(wire);
+        if (found == net.wires.end()) {
+            // Not yet used for any arcs of this net, add to list
+            net.wires.emplace(wire, std::make_pair(uphill, 1));
+            // Increase bound count of wire by 1
+            WireStatus st = wires.get(wire);
+            ++st.curr_cong;
+            wires.set(wire, st);
+        } else {
+            // Already used for at least one other arc of this net
+            // Don't allow two uphill PIPs for the same net and wire
+            NPNR_ASSERT(found->second.first == uphill);
+            // Increase the count of bound arcs
+            ++found->second.second;
+        }
+    }
+
+    void unbind_wire(NetData &net, uint32_t wire)
+    {
+        auto &b = net.wires.at(wire);
+        --b.second;
+        if (b.second == 0) {
+            // No remaining arcs of this net bound to this wire
+            WireStatus st = wires.get(wire);
+            --st.curr_cong;
+            wires.set(wire, st);
+            net.wires.erase(wire);
+        }
+    }
+
+    Context *ctx;
+    typename Types::WireLocT wire_loc;
+    typename Types::FlatWireT flat_wires;
+    typename Types::WireSegT wire_seg;
+};
+
 NEXTPNR_NAMESPACE_END

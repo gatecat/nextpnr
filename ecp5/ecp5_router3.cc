@@ -23,4 +23,10 @@
 
 NEXTPNR_NAMESPACE_BEGIN
 
+struct ECP5Router3Types : Router3Types
+{
+};
+
+void router3_run(Context *ctx) { Router3<ECP5Router3Types> router3(ctx); }
+
 NEXTPNR_NAMESPACE_END
