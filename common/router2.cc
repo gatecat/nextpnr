@@ -93,6 +93,7 @@ struct Router2
         // Visit data
         PipId pip_fwd, pip_bwd;
         bool visited_fwd = false, visited_bwd = false;
+        float score_fwd = 0, score_bwd = 0;
     };
 
     Context *ctx;
@@ -547,21 +548,23 @@ struct Router2
     }
 
     // Functions for marking wires as visited, and checking if they have already been visited
-    void set_visited_fwd(ThreadContext &t, int wire, PipId pip)
+    void set_visited_fwd(ThreadContext &t, int wire, PipId pip, float visit_score)
     {
         auto &wd = flat_wires.at(wire);
         if (!wd.visited_fwd && !wd.visited_bwd)
             t.dirty_wires.push_back(wire);
         wd.pip_fwd = pip;
         wd.visited_fwd = true;
+        wd.score_fwd = visit_score;
     }
-    void set_visited_bwd(ThreadContext &t, int wire, PipId pip)
+    void set_visited_bwd(ThreadContext &t, int wire, PipId pip, float visit_score)
     {
         auto &wd = flat_wires.at(wire);
         if (!wd.visited_fwd && !wd.visited_bwd)
             t.dirty_wires.push_back(wire);
         wd.pip_bwd = pip;
         wd.visited_bwd = true;
+        wd.score_bwd = visit_score;
     }
 
     bool was_visited_fwd(int wire) { return flat_wires.at(wire).visited_fwd; }
@@ -615,7 +618,10 @@ struct Router2
 
         // This records the point where forwards and backwards routing met
         int midpoint_wire = -1;
+        float best_total = 0;
         int explored = 1;
+
+        float total_est = ctx->estimateDelay(src_wire, dst_wire);
 
         for (; mode < 2; mode++) {
             // Clear out the queues
@@ -639,7 +645,7 @@ struct Router2
                 int wire_idx = wire_to_idx.at(wire);
                 base_score.togo_cost = get_togo_cost(net, i, wire_idx, dst_wire, false, crit_weight);
                 t.fwd_queue.push(QueuedWire(wire_idx, base_score));
-                set_visited_fwd(t, wire_idx, PipId());
+                set_visited_fwd(t, wire_idx, PipId(), base_score.cost);
             };
             auto &dst_data = flat_wires.at(dst_wire_idx);
             // Look for nearby existing routing
@@ -661,7 +667,7 @@ struct Router2
                 // Seed forwards with the source wire, if less than 8 existing wires added
                 seed_queue_fwd(src_wire);
             } else {
-                set_visited_fwd(t, src_wire_idx, PipId());
+                set_visited_fwd(t, src_wire_idx, PipId(), 0);
             }
             auto seed_queue_bwd = [&](WireId wire) {
                 WireScore base_score;
@@ -669,7 +675,7 @@ struct Router2
                 int wire_idx = wire_to_idx.at(wire);
                 base_score.togo_cost = get_togo_cost(net, i, wire_idx, src_wire, true, crit_weight);
                 t.bwd_queue.push(QueuedWire(wire_idx, base_score));
-                set_visited_bwd(t, wire_idx, PipId());
+                set_visited_bwd(t, wire_idx, PipId(), base_score.cost);
             };
 
             // Seed backwards with the dest wire
@@ -681,19 +687,29 @@ struct Router2
             // Mode 0 required both queues to be live
             while (((mode == 0) ? (!t.fwd_queue.empty() && !t.bwd_queue.empty())
                                 : (!t.fwd_queue.empty() || !t.bwd_queue.empty())) &&
-                   (!is_bb || iter < toexplore)) {
+                   ((midpoint_wire == -1 && !is_bb) || iter < toexplore)) {
                 ++iter;
                 if (!t.fwd_queue.empty()) {
                     // Explore forwards
                     auto curr = t.fwd_queue.top();
                     t.fwd_queue.pop();
                     ++explored;
+                    // Visited already with lower cost
+                    auto &curr_data = flat_wires.at(curr.wire);
                     if (was_visited_bwd(curr.wire)) {
                         // Meet in the middle; done
-                        midpoint_wire = curr.wire;
-                        break;
+                        float total_cost = curr.score.cost + curr_data.score_bwd;
+                        if (midpoint_wire == -1 || total_cost < best_total) {
+                            midpoint_wire = curr.wire;
+                            best_total = total_cost;
+                            toexplore = std::min<int>(toexplore, iter * 1.5);
+                        }
                     }
-                    auto &curr_data = flat_wires.at(curr.wire);
+                    if (curr_data.visited_fwd && (curr.score.cost > curr_data.score_fwd)) {
+                        // Was visited with cheaper cost. Ignore
+                        continue;
+                    }
+
                     for (PipId dh : ctx->getPipsDownhill(curr_data.w)) {
                         // Skip pips outside of box in bounding-box mode
                         if (is_bb && !hit_test_pip(nd.bb, ctx->getPipLocation(dh)))
@@ -702,10 +718,6 @@ struct Router2
                             continue;
                         WireId next = ctx->getPipDstWire(dh);
                         int next_idx = wire_to_idx.at(next);
-                        if (was_visited_fwd(next_idx)) {
-                            // Don't expand the same node twice.
-                            continue;
-                        }
                         auto &nwd = flat_wires.at(next_idx);
                         if (nwd.unavailable)
                             continue;
@@ -720,9 +732,11 @@ struct Router2
                             continue; // thread safety issue
                         WireScore next_score;
                         next_score.cost = curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, dh, crit_weight);
+                        if (nwd.visited_fwd && nwd.score_fwd < curr.score.cost)
+                            continue;
                         next_score.togo_cost =
                                 cfg.estimate_weight * get_togo_cost(net, i, next_idx, dst_wire, false, crit_weight);
-                        set_visited_fwd(t, next_idx, dh);
+                        set_visited_fwd(t, next_idx, dh, next_score.cost);
                         t.fwd_queue.push(QueuedWire(next_idx, next_score, t.rng.rng()));
                     }
                 }
@@ -731,12 +745,20 @@ struct Router2
                     auto curr = t.bwd_queue.top();
                     t.bwd_queue.pop();
                     ++explored;
+                    auto &curr_data = flat_wires.at(curr.wire);
                     if (was_visited_fwd(curr.wire)) {
                         // Meet in the middle; done
-                        midpoint_wire = curr.wire;
-                        break;
+                        float total_cost = curr.score.cost + curr_data.score_fwd;
+                        if (midpoint_wire == -1 || total_cost < best_total) {
+                            midpoint_wire = curr.wire;
+                            best_total = total_cost;
+                            toexplore = std::min<int>(toexplore, iter * 1.5);
+                        }
                     }
-                    auto &curr_data = flat_wires.at(curr.wire);
+                    if (curr_data.visited_bwd && (curr.score.cost > curr_data.score_bwd)) {
+                        // Was visited with cheaper cost. Ignore
+                        continue;
+                    }
                     // Don't allow the same wire to be bound to the same net with a different driving pip
                     PipId bound_pip;
                     auto fnd_wire = nd.wires.find(curr_data.w);
@@ -752,10 +774,6 @@ struct Router2
                             continue;
                         WireId next = ctx->getPipSrcWire(uh);
                         int next_idx = wire_to_idx.at(next);
-                        if (was_visited_bwd(next_idx)) {
-                            // Don't expand the same node twice.
-                            continue;
-                        }
                         auto &nwd = flat_wires.at(next_idx);
                         if (nwd.unavailable)
                             continue;
@@ -766,9 +784,11 @@ struct Router2
                             continue; // thread safety issue
                         WireScore next_score;
                         next_score.cost = curr.score.cost + score_wire_for_arc(net, i, phys_pin, next, uh, crit_weight);
+                        if (nwd.visited_bwd && nwd.score_bwd < curr.score.cost)
+                            continue;
                         next_score.togo_cost =
                                 cfg.estimate_weight * get_togo_cost(net, i, next_idx, src_wire, true, crit_weight);
-                        set_visited_bwd(t, next_idx, uh);
+                        set_visited_bwd(t, next_idx, uh, next_score.cost);
                         t.bwd_queue.push(QueuedWire(next_idx, next_score, t.rng.rng()));
                     }
                 }
